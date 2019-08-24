@@ -61,7 +61,6 @@ def detect_contour(_img, mask_hsv ,name):
     # hsvLower = np.array([100,0,100])
     # hsvUpper = np.array([255,100,255])
 
-
     # 赤い風船を検出：陸上
     #hsvLower = np.array([0, 50, 60])
     #hsvUpper = np.array([20, 255, 255])
