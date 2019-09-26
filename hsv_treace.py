@@ -4,35 +4,35 @@ import cv2
 import numpy as np
 import struct
 import math
-import sys
 from datetime import datetime
 
 controll_raspi_port = 50007  # 制御ラズパイのポート
 controll_raspi_ipaddr = '192.168.179.5'  # 制御ラズパイのIPアドレス
-# controll_raspi_ipaddr = '133.15.166.213' # 研究室LAN
 camera_raspi_ipaddr = controll_raspi_ipaddr  # カメラのラズパイアドレス　制御と同じにしている
-camera1_raspi_port = 5569  # カメラのラズパイポート番号
-camera2_raspi_port = 5570  # カメラのラズパイポート番号
+camera1_raspi_port = 5569  # カメラ1（正面カメラ）のラズパイポート番号
+camera2_raspi_port = 5570  # カメラ2（下カメラ）のラズパイポート番号
 
 min_detect_area = 1e3  # 最小検出面積
-camera2_balloon_detection_threshold = 1e3  # 下カメラで風船を検出し、次のモードに遷移するしきい値
-Balloon_non_detection_waiting_time = 2 * 10  # 待機するフレーム数。2秒x10fps
+camera2_balloon_detection_threshold = 5e3  # 下カメラで風船を検出したとき、風船割るモードに遷移する面積（ピクセル数）のしきい値
+Balloon_non_detection_waiting_time = 2 * 10  # 風船が見つからないときに待機するフレーム数。2秒x10fps
 
 camera1_resolution = [640, 480]  # カメラ1の解像度 (width, hight)
-camera2_resolution = [640, 480]  # カメラ1の解像度 (width, hight)
+camera2_resolution = [640, 480]  # カメラ2の解像度 (width, hight)
 
-max_motor_val = 50  # モータの最大値　100が最大（mbedの都合）
-motor_power_const = 1  # モータパワーを抑える変数。0?1の間にする。
+max_motor_val = 50  # モータの最大値　0-100で入力する。出力を抑えたいときに使う。
+motor_power_const = 1  # モータ出力を一定割合で抑える。0-1の間にする。
 
-controll_trace_const_a = 0.0001 # ふうせんを追いかけるときの画像位置に比例したハンドル量
+debug_mode = False  # マスク画像、2値画像などが表示される
 
-debug_mode = False  # 画像が増える。2値化画像とかがでてくる。
-
-mask_hsv_cam1 = [100,0,0, 255,100,255] # H_下限  H_上限 S_下限 S_上限 V_下限 V_上限
-mask_hsv_cam2 = [100,0,0, 255,100,255] # H_下限  H_上限 S_下限 S_上限 V_下限 V_上限
+# 風船の色範囲を設定する。正面カメラと下カメラで異なる値を設定できる。現在の設定値はJAMSTEC多目的プールで赤色風船を検出する設定
+mask_hsv_cam1 = [110,180,0, 255,0,255] # H_下限  H_上限 S_下限 S_上限 V_下限 V_上限
+mask_hsv_cam2 = [120,180,0, 255,0,255] # H_下限  H_上限 S_下限 S_上限 V_下限 V_上限
 
 
 def getimage(HOST, PORT):
+    # ここを参考にしています。
+    # https://qiita.com/sourcekatu/items/ddc0f372c775e6bf53f1
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((HOST, PORT))
     sock.send(b'test')
@@ -49,38 +49,17 @@ def getimage(HOST, PORT):
     return cv2.imdecode(narray, 1)
 
 
-def detect_contour(_img, mask_hsv ,name):
-    # 画像を読込
-    src = _img
+def detect_contour(src, mask_hsv ,name):
+    # 参考サイト1：OpenCVで丸い物体を検出
+    # https://qiita.com/neriai/items/448a36992e308f4cabe2
+    # 参考サイト2：HSVの色範囲を指定して画像にマスクする
+    # http://rikoubou.hatenablog.com/entry/2019/02/21/190310
 
     hsvLower = np.array([mask_hsv[0], mask_hsv[2], mask_hsv[4]])
     hsvUpper = np.array([mask_hsv[1], mask_hsv[3], mask_hsv[5] ])
 
-    # 2019/08/23 一回目成功パラメータ
-    # 赤い風船を検出プール用
-    # hsvLower = np.array([100,0,100])
-    # hsvUpper = np.array([255,100,255])
-
-    # 赤い風船を検出：陸上
-    #hsvLower = np.array([0, 50, 60])
-    #hsvUpper = np.array([20, 255, 255])
-
-    #hsvLower2 = np.array([200, 50, 60])
-    #hsvUpper2 = np.array([360, 255, 255])
-
-    # 黄風船検出
-    #hsvLower = np.array([0, 0, 100])
-    #hsvUpper = np.array([90, 255, 255])
-
-    # 青風船検出
-    # hsvLower = np.array([90,100,100])
-    # hsvUpper = np.array([150,255,255])
-
     hsv = cv2.cvtColor(src, cv2.COLOR_BGR2HSV)
     hsvMask = cv2.inRange(hsv, hsvLower, hsvUpper)
-    #hsvMask2 = cv2.inRange(hsv, hsvLower2, hsvUpper2)
-    #hsvMask = hsvMask1 + hsvMask2
-
 
     if debug_mode:
         cv2.imshow(name + 'mask', hsvMask)
@@ -145,14 +124,12 @@ def detect_contour(_img, mask_hsv ,name):
     cv2.imshow(name + 'output', src)
     # cv2.waitKey(0)
 
-    return ret  # 風船がある時のみターゲットまでの座標を返す
+    return ret  # 風船がある時のみターゲットまでの座標(ピクセル数)を返す
 
 
 # モータの制御量を決める関数
 def controll_trace(_target):
-    #a = 0.0001 * (100 - 0.0001 * math.pow(_target, 2))
-
-    a = controll_trace_const_a * abs(_target)
+    a = 0.0001 * abs(_target) # ルートをつけることで遠いところでの出力を抑える。
     if _target < 0:
         a = a *(-1)
 
@@ -171,9 +148,10 @@ def motor_fwdcurve(forward_val, valance, down_val):
 def controll_on_balloon(_target_x, _target_y, _down):
     print("_target_x=" + str(_target_x) + ", _target_y:" + str(_target_y) + ", depth:" +
           str(math.pow((math.pow(_target_x, 2) + math.pow(_target_y, 2)), 2)))
-    motor_horizontal_move(_target_x * 0.3, _target_y * 0.3,
-                          100 - 0.1 * math.pow(0.0001 * math.pow(_target_x, 2) + 0.0001 * math.pow(_target_y, 2),
-                                               2))  # ここ
+    motor_horizontal_move(_target_x * 0.1, _target_y * 0.1,
+                          0.3*(100 - 0.1 * math.pow(0.0001 * math.pow(_target_x, 2) + 0.0001 * math.pow(_target_y, 2),
+                                               2)))  # ここ
+    #motor_horizontal_move(_target_x * 0.3, _target_y * 0.3,20)  # ここ
 
 
 # モータを左右方向に動かす
@@ -202,71 +180,86 @@ def send_controlldata(_send_data):
         num = _send_data
         # サーバを指定
         s.connect((controll_raspi_ipaddr, controll_raspi_port))
+        
         send_data = struct.pack('!B', int(0))
         for i in range(5):
-            # サーバにメッセージを送る
+            # モータ値が範囲内に収まるようにする
             if num[i] < 0:
                 num[i] = 0
             elif num[i] > max_motor_val:
                 num[i] = max_motor_val
 
-            bin = struct.pack('!B', int(num[i] * motor_power_const))
-            # s.sendall(b'hello')
+            bin = struct.pack('!B', int(num[i] * motor_power_const)) 
             send_data = send_data + bin
-        # print(send_data)
-        # if debug_mode:
-        print(num)
+
+        if debug_mode:
+            print(num)
         s.sendall(send_data)
 
 
+
+# ここからメインループ
+
 mode = 0
+cnt2 = 0
 
 while True:
 
-    # 送信先のIPアドレスとポート番号を設定
+    # カメラから映像を取得する
     img = getimage(camera_raspi_ipaddr, camera1_raspi_port)
-    # cv2.imshow('getimage',img)  # ラズパイから送られてきた生画像
+    if debug_mode:
+        cv2.imshow('getimage',img)  # ラズパイから送られてきた生画像を表示
     target = detect_contour(img, mask_hsv_cam1, 'cam1:')
 
-    img2 = getimage(camera_raspi_ipaddr, mask_hsv_cam2, camera2_raspi_port)
+    img2 = getimage(camera_raspi_ipaddr, camera2_raspi_port)
     if debug_mode:
         cv2.imshow('cam2:getimage', img2)
-    target2 = detect_contour(img2, 'cam2:')
+    target2 = detect_contour(img2,mask_hsv_cam2,  'cam2:')
 
     if mode == 0:  # 風船を見つけに行くモード
         if target != None:  # 風船を検出している時
-            controll_trace(target[0] - camera1_resolution[0] / 2)
-        else:  # 風船探索モード
+            controll_trace(target[0] - camera1_resolution[0] / 2)   # 風船をトレースする。target[0] - camera1_resolution[0] / 2は中心からの位置
+            cnt2 = 0
+        else:  # 風船が見つからないとき
             print("balloon is not detected")
-            stop_array = [0, 10, 10, 0, 0]  # ここ
-            send_controlldata(stop_array)
+            cnt2 = cnt2 + 1
 
-        if target2 != None:  # 舌カメラに風船を検出したとき
-            if target2[2] > camera2_balloon_detection_threshold:
+            # 風船探索モード
+            if cnt2 < 30:       # 直進
+                stop_array = [0, 10, 10, 0, 0] 　# モータの出力を0-100で指定する。左前、左後、右後、右前、上下の順で指定する。
+                send_controlldata(stop_array)
+            elif cnt2 < 90:     # 左回転
+                stop_array = [2, 0, 2, 0, 0]
+                send_controlldata(stop_array)
+            elif cnt2 < 170:    # 右回転
+                stop_array = [0, 2, 0, 2, 0]
+                send_controlldata(stop_array)
+            else:
+                cnt2 = 0
+
+        if target2 != None:  # 下カメラで風船を検出したとき
+            if target2[2] > camera2_balloon_detection_threshold:    # 面積がしきい値より大きいときに、風船割るモードに遷移
                 cnt = 0
-                mode = 1
+                #mode = 1
                 print("下の風船を割るモードへ")
 
     elif mode == 1:  # 風船を割るモード
         if target2 != None:  # 風船があるとき
-            controll_on_balloon(target2[0] - camera2_resolution[0] / 2, target2[1] - camera2_resolution[1] / 2, 0)
+            controll_on_balloon(target2[0] - camera2_resolution[0] / 2, target2[1] - camera2_resolution[1] / 2, 0)  # 風船をトラックする。
             cnt = 0
-        else:  # 風船を見失ったとき
+        else:  # 風船を見失ったとき（風船がないとき）
             print("under balloon is not detected")
             cnt = cnt + 1
 
             stop_array = [0, 0, 0, 0, 0]
             send_controlldata(stop_array)
 
-        if cnt > Balloon_non_detection_waiting_time:
+        if cnt > Balloon_non_detection_waiting_time:    # 長時間見つけられないとき、風船が割れたときは風船を探すモードに戻る
             mode = 0
             print("通常モードへ")
 
-    # 入力されたキーの値を保存するための処理
+   # sを入力すればカメラの画像を保存する
     wait_key = cv2.waitKey(1)
-
-    #if cv2.waitKey(1) & 0xFF == ord('s'):
-    # カメラの画像を保存するプログラム
     if wait_key & 0xFF == ord('s'):
         time = datetime.now().strftime("%Y%m%d_%H_%M_%S")
         success_check1 = cv2.imwrite(time + '_image1.jpg', img)
@@ -277,8 +270,7 @@ while True:
             print("failed")
 
     # qを入力すれば処理終了
-    #elif cv2.waitKey(1) & 0xFF == ord('q'):
     elif wait_key & 0xFF == ord('q'):
-        stop_array = [0, 0, 0, 0, 0]
+        stop_array = [0, 0, 0, 0, 0]    # モータを止める
         send_controlldata(stop_array)
         break
